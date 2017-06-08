@@ -1,2 +1,2 @@
 ## Github page
-https://carlosror.github.io/mammography
+https://carlosror.github.io/mammography/
