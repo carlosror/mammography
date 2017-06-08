@@ -1,0 +1,271 @@
+---
+title: "Using decision trees to predict the severity of mammographic masses"
+output: html_notebook
+---
+
+## 1.0 Introduction
+
+I want to explore the use of decision trees to predict the severity (malignant or benign) of a mass detected during a mammogram. I think it's a really beneficial application of machine learning, as lower False Positive Rates (FPR) can not only potentially save a lot of time, effort, and resources to the healthcare system, but they could also spare patients from what must be an almost **unbearable** amount of grief and stress.
+<br>
+
+## 2.0 Getting ahold of the data
+
+### 2.1 Downloading the data
+
+The data was downloaded from UC-Irvine's [Machine Learning Repository](http://archive.ics.uci.edu/ml/datasets/mammographic+mass). 
+<br>
+
+### 2.2 Data glossary
+
+Information about the various attributes can be found [here](http://archive.ics.uci.edu/ml/machine-learning-databases/mammographic-masses/mammographic_masses.names).
+<br>
+
+### 2.3 Reading the data
+
+Now let's read the data. Since the data does not have column names, we will add those using the data layout file mentioned earlier.
+```{r}
+mammo_data <- read.csv("mammographic_masses.data", header = FALSE)
+colnames(mammo_data) <- c("Assessment", "Age", "Shape", "Margin", "Density", "Severity")
+```
+<br>
+
+Take a look at the data summary
+```{r}
+str(mammo_data)
+```
+<br>
+
+$Assessment$ is the [BI-RADS](http://breast-cancer.ca/bi-rads/) classification scheme to summarize the mammography's results with a single number, ranging from 0 to 6. $Age$ is the patient's age, $Shape$, $Margin$, and $Density$ are physical attributes of the mass detected that have been mapped to scales of 1 to 4 or 1 to 5, and $Severity$ is the Boolean response variable, $0$ if the mass turned out to be benign, and $1$ otherwise.
+<br>
+
+## 3.0 Data exploration and munging
+
+### 3.1 Imputing missing data
+
+The $?$ values of the attributes in the `str()` printout indicate missing data. We can impute the missing data using the [**mice**](https://cran.r-project.org/web/packages/mice/mice.pdf) package.
+<br>
+
+First let's replace the $?$ with $NA$.
+```{r}
+mammo_data$Assessment[mammo_data$Assessment == "?"] <- NA
+mammo_data$Assessment <- factor(mammo_data$Assessment)
+mammo_data$Age[mammo_data$Age == "?"] <- NA
+mammo_data$Age <- as.integer(mammo_data$Age) # Age is an integer
+mammo_data$Shape[mammo_data$Shape == "?"] <- NA
+mammo_data$Shape <- factor(mammo_data$Shape)
+mammo_data$Margin[mammo_data$Margin == "?"] <- NA
+mammo_data$Margin <- factor(mammo_data$Margin)
+mammo_data$Density[mammo_data$Density == "?"] <- NA
+mammo_data$Density <- factor(mammo_data$Density)
+str(mammo_data)
+```
+<br>
+
+Now we can impute the missing data. This takes a couple of minutes in my computer.
+```{r}
+library(mice)
+set.seed(1000)
+vars.for.imputation <- c("Assessment", "Age", "Shape", "Margin", "Density")
+imputed <- complete(mice(mammo_data[vars.for.imputation]))
+mammo_data[vars.for.imputation] <- imputed
+```
+
+
+### 3.2 Data munging
+
+$Assessment$ is supposed to be an ordinal variable that can take values from $0$ to $6$, but `str()` shows 7 levels.
+```{r}
+table(mammo_data$Assessment)
+```
+<br>
+
+There is a value of $55$. This could be a case of hitting the '5' key twice by accident.
+```{r}
+mammo_data$Severity[mammo_data$Assessment == "55"]
+```
+<br>
+
+The response for that specific case was $1$, i.e., the mass turned out to be malignant. We can change the $55$ to a $5$.
+```{r}
+mammo_data$Assessment[mammo_data$Assessment == "55"] <- "5"
+# Reset factor levels
+# https://stackoverflow.com/questions/1195826/drop-factor-levels-in-a-subsetted-data-frame
+mammo_data$Assessment <- factor(mammo_data$Assessment) 
+
+table(mammo_data$Assessment)
+```
+<br>
+
+The cases classified as $6$ are cases known to be malignant.
+<br>
+
+We can also convert $Severity$ to a factor, i.e., an ordinal variable.
+```{r}
+mammo_data$Severity <- factor(mammo_data$Severity)
+summary(mammo_data)
+```
+<br>
+
+### 3.3 Data exploration
+
+A quick look at the `summary()` printout above shows that the vast majority of $Assessment$ values are either $4$ or $5$. According to the [BI-RADS](http://breast-cancer.ca/bi-rads/) scale, $4$ is a mass described as a "suspicious abnormality", whereas a $5$ is one "highly suspicious of malignancy". We can split the data into benign and malign and see how the assessments are distributed.
+```{r}
+mammo_data_benign <- mammo_data[mammo_data$Severity == "0",]
+summary(mammo_data_benign$Assessment)
+```
+<br>
+
+$41$ masses out of $347$ deemed highly suspicious of being malignant turned out to be benign, and $427$ out of $547$ cases characterized as "suspicious" also turned out to be benign. Altogether, $468$ cases out of $894$, or $52.3\%$ of the cases regarded as "suspicious" or "highly suspicious", were in fact benign. That is a high percentage of people that are potentially under a lot of strain for days or even weeks. There are also 3 cases classified as $6$ that turned out not to be malignant, after all, which is a bit mystifying, since those are supposed to be cases known to be malignant, according to the [BI-RADS](http://breast-cancer.ca/bi-rads/) scheme.
+```{r}
+mammo_data_malign <- mammo_data[mammo_data$Severity == "1",]
+summary(mammo_data_malign$Assessment)
+```
+<br>
+
+$8$ cases out of a total of $51$ classified as "benign" ($2$) or "probably benign" ($3$) were actually malignant, or about $15.7\%$.
+<br>
+
+### 3.4 Splitting into training and testing datasets
+
+Let's split the data into training and testing data sets.
+```{r}
+library(caTools)
+set.seed(1000) # reproducibility
+split <- sample.split(mammo_data$Severity, SplitRatio = 0.7)
+mammo_data_train <- subset(mammo_data, split==TRUE)
+mammo_data_test <- subset(mammo_data, split==FALSE)
+```
+<br>
+
+## 4.0 Decision trees
+
+Loading the required libraries
+```{r}
+library(rpart)
+library(rpart.plot)
+```
+<br>
+
+Now we build the tree and plot it. The parameter *minbucket* allows us to select how the minimum number of that are placed in one of the tree's "leaves" or "buckets".
+```{r}
+# Building a tree with a minimum of 10 observations on each leaf
+mammog_tree <- rpart(Severity ~ ., data = mammo_data_train, control=rpart.control(minbucket=10))
+prp(mammog_tree)
+```
+<br>
+
+The tree is not hard to interpret. If $Assessment$ is $5$ or $0$ or $6$, the tree predicts $1$, or malignant. Otherwise, the tree looks at $Shape$ and $Age$ to predict an outcome. Having built the tree, we can check its accuracy on the training set itself.
+```{r}
+# Generate predictions on training set
+PredictCART_train = predict(mammog_tree, type = "class")
+# Confusion matrix of training set
+conf_matrix_train <- table(mammo_data_train$Severity, PredictCART_train)
+conf_matrix_train
+```
+<br>
+
+The rows are the ground truth whereas the columns are the predictions generated by the tree. For example, out of those training set observations that were benign, the tree correctly labels $318$ of them as such and $43$ of them incorrectly as malign. We can compute the accuracy as the sum of the true negatives and true positives and dividing by the total number of observations.
+
+$$
+Accuracy = \frac{True\ Positives\ +\ True\ Negatives}{True\ Positives\ +\ True\ Negatives\ +\ False\ Positives\ +\ False\ Negatives} = \frac{Number\ of\ cases\ labelled\ correctly}{Total\ number\ of\ cases}
+$$
+
+```{r}
+sum(diag(conf_matrix_train)) / sum(conf_matrix_train)
+```
+<br>
+
+### 4.1 Make predictions on the test set using the CART model
+
+We can then make predictions using the tree on the test set.
+```{r}
+# Generate predictions on test set
+PredictCART_test = predict(mammog_tree, newdata = mammo_data_test, type = "class")
+conf_matrix_test <- table(mammo_data_test$Severity, PredictCART_test)
+conf_matrix_test
+```
+<br>
+
+Accuracy on the test set:
+```{r}
+sum(diag(conf_matrix_test)) / sum(conf_matrix_test)
+```
+<br>
+
+The accuracy on the test set is a little worse.
+
+### 4.2 Cross-validation
+
+We can use cross-validation to obtain the tree that maximizes accuracy. There is a parameter called *cp*, or complexity parameter, that allows us, indirectly, to specify how many observations will be placed on each leaf. We can do 10-fold cross-validation for each *cp* value, compute the average accuracy of each *cp* value, and then take the best *cp* value and build the final tree with it.
+<br>
+
+Let's load the libraries we will need for the cross-validation:
+```{r}
+library(caret)
+library(e1071)
+```
+<br>
+
+Now define the parameters of the cross-validation. We will do 10-fold CV for each of 50 values of *cp*, from $0.01$ to $0.50$.
+```{r}
+# Setting cross-validation to be 10-fold
+fitControl = trainControl( method = "cv", number = 10 )
+# Setting cp to .01, .02, ..., 0.5
+cartGrid = expand.grid( .cp = (1:50)*0.01) 
+```
+<br>
+
+Perform the cross-validation to determine the best *cp* parameter. The `train()` function does 10-fold CV for each *cp* value, so it builds 10 trees for each *cp* and computes the average accuracy associated with that *cp*. Since it does this for each value of *cp*, `train()` builds 500 trees. It takes a little while.
+```{r}
+set.seed(100)
+train(Severity ~ ., data = mammo_data_train, method = "rpart", trControl = fitControl, tuneGrid = cartGrid)
+```
+<br>
+
+The `train()` function from the **caret** package selects the best value of *cp*: $0.02$. We can then use this value to build the final tree:
+```{r}
+mammog_tree_cv <- rpart(Severity ~ ., data = mammo_data_train, control=rpart.control(cp=0.02))
+prp(mammog_tree_cv)
+```
+<br>
+
+We get the same tree as before. This tree has about 80% accuracy on the test set. For the cases classified as $5$, it automatically classifies them as malignant, even though we saw earlier that quite a few of those indeed were not. That's a bit disappointing.
+<br>
+
+### 4.3 Building a tree using only the physical attributes
+
+What if we were to build a tree using just the physical attributes of the mass?
+```{r}
+set.seed(100)
+train(Severity ~ Shape + Margin + Density, data = mammo_data_train, method = "rpart", trControl = fitControl, tuneGrid = cartGrid)
+```
+<br>
+
+Building the tree with the *cp* value picked by `train()`
+```{r}
+mammog_tree_cv_physical <- rpart(Severity ~ Shape + Margin + Density, data = mammo_data_train, control=rpart.control(cp=0.01))
+prp(mammog_tree_cv_physical)
+```
+<br>
+
+Computing the accuracy of the tree on the test set
+```{r}
+PredictCART_test_CV_physical = predict(mammog_tree_cv_physical, newdata = mammo_data_test, type = "class")
+conf_matrix_test_CV_physical <- table(mammo_data_test$Severity, PredictCART_test_CV_physical)
+conf_matrix_test_CV_physical
+```
+<br>
+
+```{r}
+sum(diag(conf_matrix_test_CV_physical)) / sum(conf_matrix_test_CV_physical)
+```
+<br>
+
+The accuracy of this tree is almost the same as that of the tree that includes the BIRADS assessment.
+<br>
+
+Overall, I think this dataset would have been more useful if it had more predictors available. More specifically, more physical attributes from the mass could perhaps enable us to see if the BI-RADS assessment could be improved upon. We could also build a tree to try to predict the $Assessment$ of the radiologist, who uses [many](http://breast-cancer.ca/bi-rads/) more factors than simply shape, margin, and density to determine classification.
+
+## References
+
+1. Bertsimas, D., O'Hair, A. ***The Analytics Edge***. Spring 2014. [edX.org](www.edX.org).
